@@ -91,16 +91,13 @@ REGRAS:
 // ── Extrair JSON de texto (remove markdown code fences, etc.) ──
 
 function extractJSON(text) {
-  // Tenta parse direto
   try { return JSON.parse(text); } catch (_) { /* continua */ }
 
-  // Remove ```json ... ``` wrapper
   const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (codeBlock) {
     try { return JSON.parse(codeBlock[1].trim()); } catch (_) { /* continua */ }
   }
 
-  // Tenta encontrar o primeiro { ... } completo
   const match = text.match(/\{[\s\S]*\}/);
   if (match) {
     try { return JSON.parse(match[0]); } catch (_) { /* continua */ }
@@ -117,51 +114,36 @@ async function callGemini(prompt) {
   const apiKey = process.env.GEMINI_API_KEY;
   const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 
-  if (!apiKey) return null; // Sem chave → pula para fallback
+  if (!apiKey) return null;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const body = JSON.stringify({
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.7,
-      maxOutputTokens: 16384
-    }
+
+  // Tenta UMA vez — se falhar, cai no OpenRouter imediatamente (sem retry)
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        temperature: 0.7,
+        maxOutputTokens: 16384
+      }
+    })
   });
 
-  // Tenta até 2 vezes com retry em 429
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body
-    });
-
-    if (response.status === 429) {
-      if (attempt < 2) {
-        console.log('Gemini 429 rate limit — aguardando 10s antes de retry');
-        await sleep(10000);
-        continue;
-      }
-      console.log('Gemini 429 persistente — passando para OpenRouter');
-      return null; // Sinaliza para usar fallback
-    }
-
-    if (!response.ok) {
-      console.log(`Gemini erro ${response.status} — passando para OpenRouter`);
-      return null;
-    }
-
-    const data = await response.json();
-    if (!data.candidates?.length) return null;
-
-    const text = data.candidates[0].content?.parts?.[0]?.text;
-    if (!text) return null;
-
-    return extractJSON(text);
+  if (!response.ok) {
+    console.log(`Gemini erro ${response.status} — passando para OpenRouter`);
+    return null;
   }
 
-  return null;
+  const data = await response.json();
+  if (!data.candidates?.length) return null;
+
+  const text = data.candidates[0].content?.parts?.[0]?.text;
+  if (!text) return null;
+
+  return extractJSON(text);
 }
 
 // ══════════════════════════════════════════
@@ -224,13 +206,16 @@ async function callOpenRouter(prompt) {
 // ══════════════════════════════════════════
 
 async function callAI(prompt) {
-  // Tenta Gemini primeiro (grátis)
-  const geminiResult = await callGemini(prompt);
-  if (geminiResult) {
-    return { result: geminiResult, provider: 'Gemini AI' };
+  try {
+    const geminiResult = await callGemini(prompt);
+    if (geminiResult) {
+      return { result: geminiResult, provider: 'Gemini AI' };
+    }
+    console.log('Gemini retornou null — usando OpenRouter como fallback');
+  } catch (geminiErr) {
+    console.log('Gemini falhou com erro:', geminiErr.message, '— usando OpenRouter como fallback');
   }
 
-  // Fallback: OpenRouter / DeepSeek (pago, barato)
   const openRouterResult = await callOpenRouter(prompt);
   return { result: openRouterResult, provider: 'DeepSeek via OpenRouter' };
 }
@@ -238,7 +223,6 @@ async function callAI(prompt) {
 // ── Handler Principal ──
 
 export default async function handler(req, res) {
-  // CORS para desenvolvimento local
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
