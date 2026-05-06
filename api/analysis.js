@@ -21,7 +21,7 @@ function getSupabase() {
 
 function isCacheFresh(updatedAt) {
   if (!updatedAt) return false;
-  const ttlHours = parseInt(process.env.CACHE_TTL_HOURS) || 24;
+  const ttlHours = parseInt(process.env.CACHE_TTL_HOURS) || 168; // 7 dias padrão
   const age = Date.now() - new Date(updatedAt).getTime();
   return age < ttlHours * 60 * 60 * 1000;
 }
@@ -87,7 +87,11 @@ REGRAS:
 // ── Extrair JSON de texto ──
 
 function extractJSON(text) {
-  try { return JSON.parse(text); } catch (_) { /* continua */ }
+  // Limpa blocos "Thinking..." e footers que alguns modelos adicionam
+  text = text.replace(/\*Thinking\.\.\.\*\n\n(?:> [^\n]*\n?)*/g, '');
+  text = text.replace(/\n*---\n+(?:Learn more|Related searches):\n[\s\S]*$/, '');
+
+  try { return JSON.parse(text.trim()); } catch (_) { /* continua */ }
   const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (codeBlock) {
     try { return JSON.parse(codeBlock[1].trim()); } catch (_) { /* continua */ }
