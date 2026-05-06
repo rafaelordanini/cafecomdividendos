@@ -58,6 +58,7 @@ export default async function handler(req, res) {
 
     if (pairCount < 5) {
       console.error(`[Fundamentus] Poucos dados extraídos: ${pairCount} pares`);
+      // Log some pairs for debugging
       console.error('[Fundamentus] Pares:', JSON.stringify(pairs).substring(0, 500));
       return res.status(404).json({ error: `Dados insuficientes para "${tickerUpper}" no Fundamentus` });
     }
@@ -114,28 +115,36 @@ function extractLabelValuePairs(html) {
 
   while ((rowMatch = rowRegex.exec(flat)) !== null) {
     const rowHtml = rowMatch[1];
-    let texts = [];
 
-    // Primário: spans com class contendo "txt" (regex flexível)
-    // Aceita class="txt", class="txt destaque", class="destaque txt", etc.
+    // ── Método 1: spans com class contendo "txt" ──
+    let spanTexts = [];
     const spanRegex = /<span[^>]*\bclass\s*=\s*"[^"]*\btxt\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
     let spanMatch;
-
     while ((spanMatch = spanRegex.exec(rowHtml)) !== null) {
       const text = cleanCellText(spanMatch[1]);
-      if (text) texts.push(text);
+      if (text) spanTexts.push(text);
     }
 
-    // Fallback: se poucos spans encontrados, tenta extrair de <td> diretamente
-    // (algumas células podem usar classes diferentes ou sem span)
-    if (texts.length < 2) {
-      texts = [];
-      const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-      let tdMatch;
-      while ((tdMatch = tdRegex.exec(rowHtml)) !== null) {
-        const text = cleanCellText(tdMatch[1]);
-        if (text) texts.push(text);
-      }
+    // ── Método 2: todas as células <td> ──
+    let tdTexts = [];
+    const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    let tdMatch;
+    while ((tdMatch = tdRegex.exec(rowHtml)) !== null) {
+      const text = cleanCellText(tdMatch[1]);
+      if (text) tdTexts.push(text);
+    }
+
+    // ── Escolha do melhor resultado ──
+    // Prefere spans se resultado é par e ≥ 2 (pareamento correto de label/valor)
+    // Caso contrário, usa td (mais completo — pega células sem span.txt)
+    // Se spans deu ímpar, alguma célula não tem classe "txt" → td é mais seguro
+    let texts;
+    if (spanTexts.length >= 2 && spanTexts.length % 2 === 0) {
+      texts = spanTexts;
+    } else if (tdTexts.length >= 2) {
+      texts = tdTexts;
+    } else {
+      texts = spanTexts.length >= tdTexts.length ? spanTexts : tdTexts;
     }
 
     // Pares: [label, valor, label, valor, ...]
