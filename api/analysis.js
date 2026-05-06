@@ -1,13 +1,14 @@
 // ══════════════════════════════════════════════════════
-// /api/analysis — Análise Fundamentalista com Gemini + Cache Supabase
+// /api/analysis — Análise Fundamentalista com IA + Cache Supabase
 //
 // Fluxo:
 // 1. Recebe ticker + dados atuais do BrAPI (via frontend)
 // 2. Verifica cache no Supabase (TTL configurável)
 // 3. Se cache fresco → retorna imediatamente
-// 4. Se cache vencido → chama Gemini → salva no Supabase → retorna
+// 4. Se cache vencido → tenta Gemini → se falhar → OpenRouter (DeepSeek)
+// 5. Salva resultado no Supabase → retorna
 //
-// Gemini retorna JSON com:
+// Retorno JSON:
 //   - historical: dados financeiros de 4-6 anos
 //   - dcfInputs: premissas para cálculo DCF
 //   - analysis: texto markdown da análise completa
@@ -31,7 +32,11 @@ function isCacheFresh(updatedAt) {
   return age < ttlHours * 60 * 60 * 1000;
 }
 
-function buildGeminiPrompt(ticker, companyName, metrics) {
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── Prompt (compartilhado entre Gemini e OpenRouter) ──
+
+function buildPrompt(ticker, companyName, metrics) {
   const metricsStr = metrics ? JSON.stringify(metrics, null, 2) : 'Não disponível';
 
   return `Você é um analista fundamentalista sênior especializado no mercado brasileiro de ações.
@@ -83,42 +88,151 @@ REGRAS:
 - Retorne APENAS o JSON, sem texto adicional`;
 }
 
+// ── Extrair JSON de texto (remove markdown code fences, etc.) ──
+
+function extractJSON(text) {
+  // Tenta parse direto
+  try { return JSON.parse(text); } catch (_) { /* continua */ }
+
+  // Remove ```json ... ``` wrapper
+  const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlock) {
+    try { return JSON.parse(codeBlock[1].trim()); } catch (_) { /* continua */ }
+  }
+
+  // Tenta encontrar o primeiro { ... } completo
+  const match = text.match(/\{[\s\S]*\}/);
+  if (match) {
+    try { return JSON.parse(match[0]); } catch (_) { /* continua */ }
+  }
+
+  throw new Error('Não foi possível extrair JSON da resposta da IA');
+}
+
+// ══════════════════════════════════════════
+// ── Provider 1: Google Gemini ──
+// ══════════════════════════════════════════
+
 async function callGemini(prompt) {
   const apiKey = process.env.GEMINI_API_KEY;
   const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 
-  if (!apiKey) throw new Error('GEMINI_API_KEY não configurado');
+  if (!apiKey) return null; // Sem chave → pula para fallback
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.7,
+      maxOutputTokens: 16384
+    }
+  });
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0.7,
-        maxOutputTokens: 16384
+  // Tenta até 2 vezes com retry em 429
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body
+    });
+
+    if (response.status === 429) {
+      if (attempt < 2) {
+        console.log('Gemini 429 rate limit — aguardando 10s antes de retry');
+        await sleep(10000);
+        continue;
       }
+      console.log('Gemini 429 persistente — passando para OpenRouter');
+      return null; // Sinaliza para usar fallback
+    }
+
+    if (!response.ok) {
+      console.log(`Gemini erro ${response.status} — passando para OpenRouter`);
+      return null;
+    }
+
+    const data = await response.json();
+    if (!data.candidates?.length) return null;
+
+    const text = data.candidates[0].content?.parts?.[0]?.text;
+    if (!text) return null;
+
+    return extractJSON(text);
+  }
+
+  return null;
+}
+
+// ══════════════════════════════════════════
+// ── Provider 2: OpenRouter (DeepSeek) ──
+// ══════════════════════════════════════════
+
+async function callOpenRouter(prompt) {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  const model = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash';
+
+  if (!apiKey) throw new Error('Gemini indisponível e OPENROUTER_API_KEY não configurada. Configure pelo menos uma das duas.');
+
+  console.log(`Usando OpenRouter (${model}) como fallback`);
+
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://valoria.vercel.app',
+      'X-Title': 'ValorIA'
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: 'system',
+          content: 'Você é um analista fundamentalista sênior. Responda SEMPRE em JSON válido, sem texto adicional antes ou depois do JSON.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 16384
     })
   });
 
   if (!response.ok) {
     const errBody = await response.text();
-    throw new Error(`Gemini API error ${response.status}: ${errBody}`);
+    console.error('OpenRouter erro:', errBody);
+    throw new Error(`Erro na API OpenRouter (${response.status}). Tente novamente em alguns instantes.`);
   }
 
   const data = await response.json();
 
-  if (!data.candidates || !data.candidates.length) {
-    throw new Error('Gemini não retornou candidatos');
+  if (!data.choices?.length) {
+    throw new Error('OpenRouter não retornou resposta');
   }
 
-  const text = data.candidates[0].content?.parts?.[0]?.text;
-  if (!text) throw new Error('Resposta vazia do Gemini');
+  const text = data.choices[0].message?.content;
+  if (!text) throw new Error('Resposta vazia do OpenRouter');
 
-  return JSON.parse(text);
+  return extractJSON(text);
+}
+
+// ══════════════════════════════════════════
+// ── Orquestrador: Gemini → OpenRouter ──
+// ══════════════════════════════════════════
+
+async function callAI(prompt) {
+  // Tenta Gemini primeiro (grátis)
+  const geminiResult = await callGemini(prompt);
+  if (geminiResult) {
+    return { result: geminiResult, provider: 'Gemini AI' };
+  }
+
+  // Fallback: OpenRouter / DeepSeek (pago, barato)
+  const openRouterResult = await callOpenRouter(prompt);
+  return { result: openRouterResult, provider: 'DeepSeek via OpenRouter' };
 }
 
 // ── Handler Principal ──
@@ -163,20 +277,21 @@ export default async function handler(req, res) {
       });
     }
 
-    // ── 2. Chamar Gemini ──
-    const prompt = buildGeminiPrompt(tickerUpper, companyName || tickerUpper, metrics);
-    const geminiResult = await callGemini(prompt);
+    // ── 2. Chamar IA (Gemini → OpenRouter fallback) ──
+    const prompt = buildPrompt(tickerUpper, companyName || tickerUpper, metrics);
+    const { result: aiResult, provider } = await callAI(prompt);
 
     const result = {
-      historical: geminiResult.historical || {},
-      dcfInputs: geminiResult.dcfInputs || {},
-      analysis: geminiResult.analysis || '',
-      dataSource: geminiResult.dataSource || 'Gemini AI',
+      historical: aiResult.historical || {},
+      dcfInputs: aiResult.dcfInputs || {},
+      analysis: aiResult.analysis || '',
+      dataSource: aiResult.dataSource || provider,
       fromCache: false,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      provider
     };
 
-    // ── 3. Salvar no Supabase (fire-and-forget com fallback) ──
+    // ── 3. Salvar no Supabase ──
     try {
       await supabase.from('stock_analyses').upsert({
         ticker: tickerUpper,
@@ -190,7 +305,6 @@ export default async function handler(req, res) {
         updated_at: result.updatedAt
       }, { onConflict: 'ticker' });
     } catch (saveErr) {
-      // Cache write falhou — não bloqueia a resposta
       console.error('Erro ao salvar cache no Supabase:', saveErr.message);
     }
 
