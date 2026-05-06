@@ -663,14 +663,17 @@ function renderDashboard(quote, analysisData, fundData) {
     changeEl.textContent = '';
   }
 
-  // Cache status
+  // Cache status + data da análise
   const cs = $('#cacheStatus');
+  const analysisDate = analysisData.updatedAt ? new Date(analysisData.updatedAt) : null;
+  const analysisFmt = analysisDate ? analysisDate.toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
   if (analysisData.fromCache) {
-    const when = analysisData.updatedAt ? new Date(analysisData.updatedAt).toLocaleString('pt-BR') : '';
-    cs.innerHTML = `<span class="cache-badge cached"><i class="fa-solid fa-database"></i> Cache · ${when}</span>
-      <button class="refresh-btn" onclick="analyze('${quote.ticker}',true)"><i class="fa-solid fa-rotate"></i> Atualizar</button>`;
+    const daysAgo = analysisDate ? Math.floor((Date.now() - analysisDate.getTime()) / 86400000) : 0;
+    const agoText = daysAgo === 0 ? 'hoje' : daysAgo === 1 ? 'há 1 dia' : `há ${daysAgo} dias`;
+    cs.innerHTML = `<span class="cache-badge cached"><i class="fa-solid fa-database"></i> Análise IA: ${analysisFmt} (${agoText})</span>
+      <button class="refresh-btn" onclick="analyze('${quote.ticker}',true)"><i class="fa-solid fa-rotate"></i> Regerar análise</button>`;
   } else {
-    cs.innerHTML = '<span class="cache-badge fresh"><i class="fa-solid fa-circle-check"></i> Atualizado agora</span>';
+    cs.innerHTML = `<span class="cache-badge fresh"><i class="fa-solid fa-circle-check"></i> Análise IA: gerada agora (${analysisFmt})</span>`;
   }
 
   $('#ovDesc').textContent = quote.description || '';
