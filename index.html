@@ -375,8 +375,8 @@ header{
 <script>
 /* ══════════════════════════════════════════════════
    ValorIA — Frontend Standalone (Vercel)
-   Dados: BrAPI (tempo real) + Gemini (histórico/análise)
-   Cache: Supabase (server) + localStorage (client)
+   Dados: BrAPI (tempo real) + Fundamentus + Gemini (histórico/análise)
+   Cache: Supabase (server 7d) + localStorage (client)
    ══════════════════════════════════════════════════ */
 
 // ── Theme ──
@@ -464,7 +464,6 @@ function setStep(step) {
 }
 function showToast(msg, type) {
   const old = $('.toast'); if(old) old.remove();
-  // Limitar mensagem para não mostrar JSON bruto
   let cleanMsg = msg;
   if (cleanMsg.length > 200) cleanMsg = cleanMsg.substring(0, 200) + '…';
   const t = document.createElement('div');
@@ -518,7 +517,6 @@ async function analyze(ticker, forceRefresh) {
     setStep(1);
 
     // ── Step 2: Análise IA + Histórico (Supabase cache ou Gemini/OpenRouter) ──
-    // Envia métricas mescladas para contexto da IA
     const metricsForAI = { ...(quote.metrics || {}), ...(fundData?.metrics || {}) };
 
     const analysisRes = await fetch('/api/analysis', {
@@ -586,7 +584,8 @@ function mergeAllMetrics(fundMetrics, brapiMetrics, historical) {
     fillH('margemLiquida', historical.margemLiquida);
     fillH('dividendYield', historical.dividendYield);
 
-    // Derivados do histórico IA
+    // Derivados do histórico IA (apenas ratios seguros — sem cálculos com unidades mistas)
+    // ROE, DL/EBITDA e DL/PL são ratios puros (não dependem de unidade absoluta)
     if (historical.lucroLiquido && historical.patrimonioLiquido) {
       const ll = historical.lucroLiquido[lastIdx], pl = historical.patrimonioLiquido[lastIdx];
       if (ll != null && pl != null && pl !== 0) m.roe = (ll / pl) * 100;
@@ -599,32 +598,10 @@ function mergeAllMetrics(fundMetrics, brapiMetrics, historical) {
       const dl = historical.dividaLiquida[lastIdx], pl = historical.patrimonioLiquido[lastIdx];
       if (dl != null && pl != null && pl !== 0) m.dividaLiquidaPl = dl / pl;
     }
-    if (historical.patrimonioLiquido) {
-      const pl = historical.patrimonioLiquido[lastIdx];
-      const dcf = state.analysis?.dcfInputs || {};
-      const shares = dcf.acoes || state.quote?.shares;
-      const price = state.quote?.currentPrice;
-      if (shares && price && pl) {
-        const vpa = (pl * 1e6) / shares;
-        if (m.vpa == null) m.vpa = vpa;
-        if (m.pvp == null) m.pvp = price / vpa;
-      }
-    }
-    if (historical.ebitda && historical.dividaLiquida) {
-      const ebitda = historical.ebitda[lastIdx];
-      const dl = historical.dividaLiquida[lastIdx];
-      const mktCap = state.quote?.marketCap;
-      if (ebitda != null && ebitda !== 0 && mktCap != null) {
-        const dlVal = dl != null ? dl * 1e6 : 0;
-        if (m.evEbitda == null) m.evEbitda = (mktCap + dlVal) / (ebitda * 1e6);
-      }
-    }
-    if (historical.dividendosPorAcao) {
-      const dpa = historical.dividendosPorAcao[lastIdx];
-      if (dpa != null && m.lpa && m.lpa !== 0 && m.payout == null) {
-        m.payout = (dpa / m.lpa) * 100;
-      }
-    }
+    // NOTA: VPA, P/VP e EV/EBITDA NÃO são calculados aqui.
+    // A IA retorna valores em unidades inconsistentes (milhões vs raw),
+    // gerando valores absurdos (ex: VPA = 51 milhões em vez de 38).
+    // Esses indicadores vêm diretamente do Fundamentus (camada 3).
   }
 
   // Camada 2 (prioridade média): BrAPI
