@@ -269,7 +269,7 @@ header{
 
 <div id="landing" class="section">
   <div class="hero">
-    <div class="hero-badge"><i class="fa-solid fa-microchip"></i> BrAPI + Gemini + Supabase</div>
+    <div class="hero-badge"><i class="fa-solid fa-microchip"></i> Fundamentus + BrAPI + IA</div>
     <h2>Análise Fundamentalista<br><em>Inteligente</em></h2>
     <p>Dados em tempo real via BrAPI, histórico e análise qualitativa via Gemini, tudo cacheado no Supabase para economia de tokens. Acesse análises profundas de ações da B3.</p>
   </div>
@@ -281,10 +281,9 @@ header{
   <div class="loader-wrap">
     <div class="spinner"></div>
     <div class="loader-steps" id="loaderSteps">
-      <div class="loader-step" data-step="0"><i class="fa-solid fa-magnifying-glass-chart"></i> Buscando cotação na BrAPI...</div>
-      <div class="loader-step" data-step="1"><i class="fa-solid fa-database"></i> Verificando cache no Supabase...</div>
-      <div class="loader-step" data-step="2"><i class="fa-solid fa-brain"></i> Gerando análise com Gemini IA...</div>
-      <div class="loader-step" data-step="3"><i class="fa-solid fa-chart-line"></i> Montando dashboard...</div>
+      <div class="loader-step" data-step="0"><i class="fa-solid fa-magnifying-glass-chart"></i> Buscando cotação e indicadores...</div>
+      <div class="loader-step" data-step="1"><i class="fa-solid fa-brain"></i> Gerando análise com IA...</div>
+      <div class="loader-step" data-step="2"><i class="fa-solid fa-chart-line"></i> Montando dashboard...</div>
     </div>
   </div>
 </div>
@@ -400,7 +399,7 @@ const POPULAR = [
 ];
 
 // ── State ──
-const state = { ticker:null, quote:null, analysis:null, collapsed:false, charts:{} };
+const state = { ticker:null, quote:null, analysis:null, fundData:null, collapsed:false, charts:{} };
 
 // ── DOM shortcuts ──
 const $ = s => document.querySelector(s);
@@ -489,25 +488,46 @@ async function analyze(ticker, forceRefresh) {
   setStep(0);
 
   try {
-    // ── Step 1: BrAPI (always fresh) ──
-    const quoteRes = await fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`);
-    if (!quoteRes.ok) {
-      const err = await quoteRes.json().catch(() => ({}));
-      throw new Error(err.error || `Erro ${quoteRes.status} ao buscar dados`);
+    // ── Step 1: BrAPI + Fundamentus (em paralelo) ──
+    const [quoteRes, fundRes] = await Promise.allSettled([
+      fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`),
+      fetch(`/api/fundamentus?ticker=${encodeURIComponent(ticker)}`)
+    ]);
+
+    // Processa BrAPI (obrigatório)
+    let quote = null;
+    if (quoteRes.status === 'fulfilled' && quoteRes.value.ok) {
+      quote = await quoteRes.value.json();
+    } else {
+      let errMsg = 'Erro ao buscar cotação';
+      if (quoteRes.status === 'fulfilled') {
+        const errData = await quoteRes.value.json().catch(() => ({}));
+        errMsg = errData.error || errMsg;
+      }
+      throw new Error(errMsg);
     }
-    const quote = await quoteRes.json();
     state.quote = quote;
+
+    // Processa Fundamentus (opcional — degradação graciosa)
+    let fundData = null;
+    if (fundRes.status === 'fulfilled' && fundRes.value.ok) {
+      fundData = await fundRes.value.json();
+    }
+    state.fundData = fundData;
 
     setStep(1);
 
-    // ── Step 2: Analysis + Historical (Supabase cache or Gemini) ──
+    // ── Step 2: Análise IA + Histórico (Supabase cache ou Gemini/OpenRouter) ──
+    // Envia métricas mescladas para contexto da IA
+    const metricsForAI = { ...(quote.metrics || {}), ...(fundData?.metrics || {}) };
+
     const analysisRes = await fetch('/api/analysis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ticker,
-        companyName: quote.company,
-        metrics: quote.metrics,
+        companyName: quote.company || fundData?.company || ticker,
+        metrics: metricsForAI,
         forceRefresh: !!forceRefresh
       })
     });
@@ -518,26 +538,29 @@ async function analyze(ticker, forceRefresh) {
     const analysisData = await analysisRes.json();
     state.analysis = analysisData;
 
-    setStep(3);
+    setStep(2);
 
-    // Save to localStorage for offline-ish experience
-    lsSet(ticker, { quote, analysis: analysisData, ts: Date.now() });
+    // Salva no localStorage para fallback offline
+    lsSet(ticker, { quote, fundData, analysis: analysisData, ts: Date.now() });
 
-    // ── Step 3: Render Dashboard ──
-    renderDashboard(quote, analysisData);
+    // ── Step 3: Renderizar Dashboard ──
+    renderDashboard(quote, analysisData, fundData);
     showSection('dashboard');
 
     if (analysisData.fromCache) {
       showToast('Análise carregada do cache Supabase', 'info');
+    } else if (analysisData.provider) {
+      showToast('Análise gerada via ' + analysisData.provider, 'info');
     }
 
   } catch (err) {
-    // Try localStorage fallback
+    // Fallback: localStorage
     const cached = lsGet(ticker);
     if (cached && !forceRefresh) {
       state.quote = cached.quote;
+      state.fundData = cached.fundData || null;
       state.analysis = cached.analysis;
-      renderDashboard(cached.quote, cached.analysis);
+      renderDashboard(cached.quote, cached.analysis, cached.fundData || null);
       showSection('dashboard');
       showToast('Usando dados salvos localmente (sem conexão com o servidor)', 'info');
     } else {
@@ -547,84 +570,75 @@ async function analyze(ticker, forceRefresh) {
   }
 }
 
-// ── Mesclar indicadores BrAPI + dados históricos da IA ──
-// BrAPI gratuito retorna poucos dados; a IA traz margens, DY, etc.
-function mergeMetrics(brapiMetrics, historical) {
-  const m = { ...(brapiMetrics || {}) };
-  if (!historical || !historical.years || !historical.years.length) return m;
+// ── Mesclar indicadores: Fundamentus > BrAPI > IA histórica ──
+// Prioridade: Fundamentus (mais completo) > BrAPI (tempo real) > IA (estimativas)
+function mergeAllMetrics(fundMetrics, brapiMetrics, historical) {
+  const m = {};
 
-  // Pega o índice do último ano com dados
-  const lastIdx = historical.years.length - 1;
+  // Camada 1 (menor prioridade): dados históricos da IA
+  if (historical && historical.years && historical.years.length) {
+    const lastIdx = historical.years.length - 1;
+    function fillH(key, arr) {
+      if (arr && arr[lastIdx] != null) m[key] = arr[lastIdx];
+    }
+    fillH('margemBruta', historical.margemBruta);
+    fillH('margemEbitda', historical.margemEbitda);
+    fillH('margemLiquida', historical.margemLiquida);
+    fillH('dividendYield', historical.dividendYield);
 
-  // Helper: preenche se BrAPI não tem (null/undefined)
-  function fill(key, arr) {
-    if (m[key] == null && arr && arr[lastIdx] != null) {
-      m[key] = arr[lastIdx];
+    // Derivados do histórico IA
+    if (historical.lucroLiquido && historical.patrimonioLiquido) {
+      const ll = historical.lucroLiquido[lastIdx], pl = historical.patrimonioLiquido[lastIdx];
+      if (ll != null && pl != null && pl !== 0) m.roe = (ll / pl) * 100;
+    }
+    if (historical.dividaLiquida && historical.ebitda) {
+      const dl = historical.dividaLiquida[lastIdx], eb = historical.ebitda[lastIdx];
+      if (dl != null && eb != null && eb !== 0) m.dividaLiquidaEbitda = dl / eb;
+    }
+    if (historical.dividaLiquida && historical.patrimonioLiquido) {
+      const dl = historical.dividaLiquida[lastIdx], pl = historical.patrimonioLiquido[lastIdx];
+      if (dl != null && pl != null && pl !== 0) m.dividaLiquidaPl = dl / pl;
+    }
+    if (historical.patrimonioLiquido) {
+      const pl = historical.patrimonioLiquido[lastIdx];
+      const dcf = state.analysis?.dcfInputs || {};
+      const shares = dcf.acoes || state.quote?.shares;
+      const price = state.quote?.currentPrice;
+      if (shares && price && pl) {
+        const vpa = (pl * 1e6) / shares;
+        if (m.vpa == null) m.vpa = vpa;
+        if (m.pvp == null) m.pvp = price / vpa;
+      }
+    }
+    if (historical.ebitda && historical.dividaLiquida) {
+      const ebitda = historical.ebitda[lastIdx];
+      const dl = historical.dividaLiquida[lastIdx];
+      const mktCap = state.quote?.marketCap;
+      if (ebitda != null && ebitda !== 0 && mktCap != null) {
+        const dlVal = dl != null ? dl * 1e6 : 0;
+        if (m.evEbitda == null) m.evEbitda = (mktCap + dlVal) / (ebitda * 1e6);
+      }
+    }
+    if (historical.dividendosPorAcao) {
+      const dpa = historical.dividendosPorAcao[lastIdx];
+      if (dpa != null && m.lpa && m.lpa !== 0 && m.payout == null) {
+        m.payout = (dpa / m.lpa) * 100;
+      }
     }
   }
 
-  fill('margemBruta', historical.margemBruta);
-  fill('margemEbitda', historical.margemEbitda);
-  fill('margemLiquida', historical.margemLiquida);
-  fill('dividendYield', historical.dividendYield);
-
-  // P/VP: se temos patrimonioLiquido e acoes, podemos calcular
-  if (m.pvp == null && historical.patrimonioLiquido && historical.patrimonioLiquido[lastIdx] != null) {
-    const pl = historical.patrimonioLiquido[lastIdx]; // em milhões
-    const dcf = state.analysis?.dcfInputs || {};
-    const shares = dcf.acoes || state.quote?.shares;
-    const price = state.quote?.currentPrice;
-    if (shares && price && pl) {
-      const vpa = (pl * 1e6) / shares;
-      m.vpa = m.vpa ?? vpa;
-      m.pvp = m.pvp ?? (price / vpa);
-    }
+  // Camada 2 (prioridade média): BrAPI
+  if (brapiMetrics) {
+    Object.entries(brapiMetrics).forEach(function(entry) {
+      if (entry[1] != null) m[entry[0]] = entry[1];
+    });
   }
 
-  // DL/EBITDA do último ano
-  if (m.dividaLiquidaEbitda == null && historical.dividaLiquida && historical.ebitda) {
-    const dl = historical.dividaLiquida[lastIdx];
-    const ebitda = historical.ebitda[lastIdx];
-    if (dl != null && ebitda != null && ebitda !== 0) {
-      m.dividaLiquidaEbitda = dl / ebitda;
-    }
-  }
-
-  // ROE do último ano: lucroLiquido / patrimonioLiquido * 100
-  if (m.roe == null && historical.lucroLiquido && historical.patrimonioLiquido) {
-    const ll = historical.lucroLiquido[lastIdx];
-    const pll = historical.patrimonioLiquido[lastIdx];
-    if (ll != null && pll != null && pll !== 0) {
-      m.roe = (ll / pll) * 100;
-    }
-  }
-
-  // DL/PL
-  if (m.dividaLiquidaPl == null && historical.dividaLiquida && historical.patrimonioLiquido) {
-    const dl = historical.dividaLiquida[lastIdx];
-    const pll = historical.patrimonioLiquido[lastIdx];
-    if (dl != null && pll != null && pll !== 0) {
-      m.dividaLiquidaPl = dl / pll;
-    }
-  }
-
-  // EV/EBITDA: (marketCap + dividaLiquida) / ebitda
-  if (m.evEbitda == null && historical.ebitda && historical.dividaLiquida) {
-    const ebitda = historical.ebitda[lastIdx];
-    const dl = historical.dividaLiquida[lastIdx];
-    const mktCap = state.quote?.marketCap;
-    if (ebitda != null && ebitda !== 0 && mktCap != null) {
-      const dlVal = dl != null ? dl * 1e6 : 0;
-      m.evEbitda = (mktCap + dlVal) / (ebitda * 1e6);
-    }
-  }
-
-  // Payout: dividendosPorAcao / LPA * 100
-  if (m.payout == null && historical.dividendosPorAcao && m.lpa) {
-    const dpa = historical.dividendosPorAcao[lastIdx];
-    if (dpa != null && m.lpa !== 0) {
-      m.payout = (dpa / m.lpa) * 100;
-    }
+  // Camada 3 (maior prioridade): Fundamentus
+  if (fundMetrics) {
+    Object.entries(fundMetrics).forEach(function(entry) {
+      if (entry[1] != null) m[entry[0]] = entry[1];
+    });
   }
 
   return m;
@@ -633,7 +647,7 @@ function mergeMetrics(brapiMetrics, historical) {
 // ═══════════════════════════════════════
 // ── RENDER DASHBOARD ──
 // ═══════════════════════════════════════
-function renderDashboard(quote, analysisData) {
+function renderDashboard(quote, analysisData, fundData) {
   // Overview
   $('#ovCompany').textContent = quote.company || quote.ticker;
   $('#ovTicker').textContent = quote.ticker;
@@ -661,8 +675,8 @@ function renderDashboard(quote, analysisData) {
 
   $('#ovDesc').textContent = quote.description || '';
 
-  // Mesclar indicadores BrAPI + IA histórica
-  const m = mergeMetrics(quote.metrics, analysisData.historical);
+  // Mesclar indicadores: Fundamentus > BrAPI > IA histórica
+  const m = mergeAllMetrics(fundData?.metrics || null, quote.metrics, analysisData.historical);
 
   // Badges
   const badges = [];
@@ -695,10 +709,11 @@ function renderDashboard(quote, analysisData) {
 
   // Data source
   const parts = [];
-  parts.push('Preço: BrAPI (tempo real)');
-  if(analysisData.dataSource) parts.push('Histórico: '+analysisData.dataSource);
+  parts.push('Preço: BrAPI');
+  if(fundData) parts.push('Indicadores: Fundamentus');
   if(analysisData.provider) parts.push('IA: '+analysisData.provider);
-  else parts.push(analysisData.fromCache ? 'Análise: cache Supabase' : 'Análise: IA');
+  else if(analysisData.dataSource) parts.push(analysisData.dataSource);
+  if(analysisData.fromCache) parts.push('(cache)');
   $('#dataSource').innerHTML = `<i class="fa-solid fa-database"></i> ${parts.join(' · ')}`;
 }
 
