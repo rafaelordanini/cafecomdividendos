@@ -65,7 +65,11 @@ export default async function handler(req, res) {
 
     const result = mapToStandardFormat(pairs, tickerUpper);
     const metricsCount = Object.values(result.metrics).filter(v => v != null).length;
-    console.log(`[Fundamentus] Sucesso: ${metricsCount} métricas para ${tickerUpper}`);
+    const nullMetrics = Object.entries(result.metrics).filter(e => e[1] == null).map(e => e[0]);
+    console.log(`[Fundamentus] Sucesso: ${metricsCount} métricas para ${tickerUpper} (${pairCount} pares extraídos)`);
+    if (nullMetrics.length > 0) {
+      console.log(`[Fundamentus] Métricas null: ${nullMetrics.join(', ')}`);
+    }
 
     // Cache de 1h no CDN da Vercel
     res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=300');
@@ -85,6 +89,20 @@ export default async function handler(req, res) {
 // ── Extração de pares label-valor do HTML ──
 // ══════════════════════════════════════════
 
+function cleanCellText(raw) {
+  return raw
+    .replace(/<[^>]*>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&quot;/g, '"')
+    .replace(/&#\d+;/g, '')
+    .replace(/^\?+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function extractLabelValuePairs(html) {
   const pairs = {};
 
@@ -92,43 +110,48 @@ function extractLabelValuePairs(html) {
   const flat = html.replace(/[\r\n]+/g, ' ');
 
   // Estratégia: processa cada <tr> independentemente
-  // Dentro de cada row, extrai <span class="txt"> e forma pares label→valor
   const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
   let rowMatch;
 
   while ((rowMatch = rowRegex.exec(flat)) !== null) {
     const rowHtml = rowMatch[1];
+    let texts = [];
 
-    // Extrai todos os spans com class="txt" nesta row
-    const spanRegex = /<span\s+class="txt"[^>]*>([\s\S]*?)<\/span>/gi;
-    const spans = [];
+    // Primário: spans com class contendo "txt" (regex flexível)
+    // Aceita class="txt", class="txt destaque", class="destaque txt", etc.
+    const spanRegex = /<span[^>]*\bclass\s*=\s*"[^"]*\btxt\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
     let spanMatch;
 
     while ((spanMatch = spanRegex.exec(rowHtml)) !== null) {
-      // Limpa: remove tags internas, ? de tooltip, normaliza espaços
-      const text = spanMatch[1]
-        .replace(/<[^>]*>/g, '')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&quot;/g, '"')
-        .replace(/^\?+/, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      if (text) spans.push(text);
+      const text = cleanCellText(spanMatch[1]);
+      if (text) texts.push(text);
+    }
+
+    // Fallback: se poucos spans encontrados, tenta extrair de <td> diretamente
+    // (algumas células podem usar classes diferentes ou sem span)
+    if (texts.length < 2) {
+      texts = [];
+      const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+      let tdMatch;
+      while ((tdMatch = tdRegex.exec(rowHtml)) !== null) {
+        const text = cleanCellText(tdMatch[1]);
+        if (text) texts.push(text);
+      }
     }
 
     // Pares: [label, valor, label, valor, ...]
-    for (let i = 0; i < spans.length - 1; i += 2) {
-      const label = spans[i];
-      const value = spans[i + 1];
+    for (let i = 0; i < texts.length - 1; i += 2) {
+      const label = texts[i];
+      const value = texts[i + 1];
       // Mantém primeira ocorrência (dados 12 meses vêm antes dos trimestrais)
       if (label && value && !Object.prototype.hasOwnProperty.call(pairs, label)) {
         pairs[label] = value;
       }
     }
   }
+
+  // Log para debug no Vercel
+  console.log('[Fundamentus] Labels extraídos:', Object.keys(pairs).join(', '));
 
   return pairs;
 }
@@ -156,17 +179,24 @@ function parseNum(str) {
 // ══════════════════════════════════════════
 
 function get(pairs, ...labels) {
-  // Busca exata primeiro
+  // 1. Busca exata
   for (const label of labels) {
     if (Object.prototype.hasOwnProperty.call(pairs, label)) {
       return pairs[label];
     }
   }
-  // Busca case-insensitive + normalizada
+  // 2. Busca case-insensitive + normalizada
   const targets = labels.map(l => l.toLowerCase().replace(/\s+/g, ' ').trim());
   for (const [key, value] of Object.entries(pairs)) {
     const norm = key.toLowerCase().replace(/\s+/g, ' ').trim();
     if (targets.includes(norm)) return value;
+  }
+  // 3. Fuzzy: remove TODA pontuação/espaço e compara
+  // Resolve diferenças como "EV / EBITDA" vs "EV/EBITDA", "Div. Yield" vs "Div.Yield"
+  const fuzzyTargets = labels.map(l => l.toLowerCase().replace(/[^a-z0-9áàâãéèêíïóôõúüç]/gi, ''));
+  for (const [key, value] of Object.entries(pairs)) {
+    const fuzzy = key.toLowerCase().replace(/[^a-z0-9áàâãéèêíïóôõúüç]/gi, '');
+    if (fuzzyTargets.includes(fuzzy)) return value;
   }
   return null;
 }
@@ -194,25 +224,30 @@ function mapToStandardFormat(pairs, ticker) {
   // === Múltiplos de Valuation ===
   const pl = num(pairs, 'P/L');
   const pvp = num(pairs, 'P/VP');
-  const evEbitda = num(pairs, 'EV/EBITDA');
-  const evEbit = num(pairs, 'EV/EBIT');
-  const pEbit = num(pairs, 'P/EBIT');
+  const evEbitda = num(pairs, 'EV/EBITDA', 'EV / EBITDA');
+  const evEbit = num(pairs, 'EV/EBIT', 'EV / EBIT');
+  const pEbit = num(pairs, 'P/EBIT', 'P/ EBIT');
   const psr = num(pairs, 'PSR');
 
   // === Dividendos ===
-  const dividendYield = num(pairs, 'Div.Yield', 'Div. Yield');
+  const dividendYield = num(pairs, 'Div.Yield', 'Div. Yield', 'Div Yield', 'DY');
 
   // === Rentabilidade ===
-  const margemEbit = num(pairs, 'Mrg Ebit', 'Mrg. Ebit');
-  const margemLiquida = num(pairs, 'Mrg. Líq.', 'Mrg. Liq.', 'Mrg Líq', 'Mrg Liq');
+  const margemBruta = num(pairs, 'Marg. Bruta', 'Mrg. Bruta', 'Margem Bruta', 'Mrg Bruta');
+  const margemEbit = num(pairs, 'Marg. EBIT', 'Marg EBIT', 'Mrg Ebit', 'Mrg. Ebit', 'Margem EBIT');
+  const margemLiquida = num(pairs, 'Marg. Líquida', 'Margem Líquida', 'Marg Líquida',
+    'Mrg. Líq.', 'Mrg. Liq.', 'Mrg Líq', 'Mrg Liq', 'Marg. Liq.', 'Marg. Líq.');
   const roic = num(pairs, 'ROIC');
   const roe = num(pairs, 'ROE');
 
   // === Endividamento ===
-  const liqCorr = num(pairs, 'Liq. Corr.', 'Liq.Corr.', 'Liq Corr');
-  const divBrutaPatrim = num(pairs, 'Dív Bruta/ Patrim.', 'Div Bruta/ Patrim.', 'Dív Bruta/Patrim.');
-  const divLiqPatrim = num(pairs, 'Dív. Líquida/ Patrim.', 'Div. Liquida/ Patrim.', 'Dív. Líquida/Patrim.');
-  const divLiqEbitda = num(pairs, 'Dív. Líquida/EBITDA', 'Div. Liquida/EBITDA', 'Dív Líquida/EBITDA');
+  const liqCorr = num(pairs, 'Liquidez Corr', 'Liquidez Corrente', 'Liq. Corr.', 'Liq.Corr.', 'Liq Corr');
+  const divBrutaPatrim = num(pairs, 'Dív Bruta/ Patrim.', 'Div Bruta/ Patrim.', 'Dív Bruta/Patrim.',
+    'Dív. Bruta/ Patrim.', 'Dív Líq / Patrim');
+  const divLiqPatrim = num(pairs, 'Dív Líq / Patrim', 'Dív Líq/ Patrim', 'Dív. Líquida/ Patrim.',
+    'Div. Liquida/ Patrim.', 'Dív. Líquida/Patrim.', 'Dív Líquida/ Patrim.');
+  const divLiqEbitda = num(pairs, 'Dív. Líquida/EBITDA', 'Div. Liquida/EBITDA', 'Dív Líquida/EBITDA',
+    'Dív. Líquida / EBITDA');
 
   // === Por ação ===
   const lpa = num(pairs, 'LPA');
@@ -279,7 +314,7 @@ function mapToStandardFormat(pairs, ticker) {
       roe,
       roic,
       roa,
-      margemBruta: null,    // Fundamentus não exibe margem bruta
+      margemBruta,           // Capturada do Fundamentus (Marg. Bruta)
       margemEbitda,          // Calculada a partir do EV/EBITDA
       margemEbit,            // Exibida diretamente pelo Fundamentus
       margemLiquida,
