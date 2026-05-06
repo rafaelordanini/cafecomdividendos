@@ -5,7 +5,7 @@
 // 1. Tenta cache Supabase (timeout 5s — se falhar, ignora)
 // 2. Tenta Gemini (1 tentativa — se falhar, ignora)
 // 3. Fallback: OpenRouter/DeepSeek (timeout 50s)
-// 4. Salva no Supabase em background (se falhar, ignora)
+// 4. Salva no Supabase ANTES de responder (timeout 5s — se falhar, ignora)
 // ══════════════════════════════════════════════════════
 
 import { createClient } from '@supabase/supabase-js';
@@ -31,6 +31,16 @@ function fetchWithTimeout(url, options, timeoutMs = 50000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
+// Promise com timeout genérico
+function withTimeout(promise, ms, label = 'operação') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms)
+    )
+  ]);
 }
 
 // ── Prompt ──
@@ -204,6 +214,42 @@ async function callAI(prompt) {
   return { result: openRouterResult, provider: 'DeepSeek via OpenRouter' };
 }
 
+// ══════════════════════════════════════════
+// ── Salvar no Supabase (com await + timeout) ──
+// ══════════════════════════════════════════
+
+async function saveToSupabase(supabase, tickerUpper, companyName, result) {
+  if (!supabase) return;
+
+  try {
+    console.log(`[Supabase] Salvando cache para ${tickerUpper}...`);
+
+    const upsertPromise = supabase.from('stock_analyses').upsert({
+      ticker: tickerUpper,
+      company_name: companyName || tickerUpper,
+      sector: '',
+      description: '',
+      historical: result.historical,
+      dcf_inputs: result.dcfInputs,
+      analysis_text: result.analysis,
+      data_source: result.dataSource,
+      updated_at: result.updatedAt
+    }, { onConflict: 'ticker' });
+
+    // Aguarda o upsert com timeout de 5 segundos
+    const { error } = await withTimeout(upsertPromise, 5000, 'Supabase upsert');
+
+    if (error) {
+      console.error(`[Supabase] Erro ao salvar ${tickerUpper}:`, error.message, error.details, error.hint);
+    } else {
+      console.log(`[Supabase] Cache salvo com sucesso para ${tickerUpper}`);
+    }
+  } catch (err) {
+    // Timeout ou outro erro — não bloqueia a resposta
+    console.error(`[Supabase] Falha ao salvar ${tickerUpper} (ignorando):`, err.message);
+  }
+}
+
 // ── Handler Principal ──
 
 export default async function handler(req, res) {
@@ -231,21 +277,19 @@ export default async function handler(req, res) {
     supabase = getSupabase();
     if (supabase) {
       console.log('[Supabase] Verificando cache...');
-      const cachePromise = supabase
-        .from('stock_analyses')
-        .select('*')
-        .eq('ticker', tickerUpper)
-        .single();
 
-      // Timeout de 5 segundos para o Supabase
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Supabase timeout')), 5000)
+      const { data: cached, error: cacheError } = await withTimeout(
+        supabase
+          .from('stock_analyses')
+          .select('*')
+          .eq('ticker', tickerUpper)
+          .single(),
+        5000,
+        'Supabase leitura'
       );
 
-      const { data: cached, error: cacheError } = await Promise.race([cachePromise, timeoutPromise]);
-
       if (!cacheError && cached && isCacheFresh(cached.updated_at)) {
-        console.log('[Supabase] Cache fresco encontrado!');
+        console.log(`[Supabase] Cache fresco encontrado para ${tickerUpper}!`);
         return res.status(200).json({
           historical: cached.historical || {},
           dcfInputs: cached.dcf_inputs || {},
@@ -277,25 +321,10 @@ export default async function handler(req, res) {
       provider
     };
 
-    // ── 3. Salvar no Supabase (fire-and-forget, não bloqueia resposta) ──
-    if (supabase) {
-      // Não usa await — salva em background
-      supabase.from('stock_analyses').upsert({
-        ticker: tickerUpper,
-        company_name: companyName || tickerUpper,
-        sector: '',
-        description: '',
-        historical: result.historical,
-        dcf_inputs: result.dcfInputs,
-        analysis_text: result.analysis,
-        data_source: result.dataSource,
-        updated_at: result.updatedAt
-      }, { onConflict: 'ticker' }).then(() => {
-        console.log('[Supabase] Cache salvo com sucesso');
-      }).catch(err => {
-        console.error('[Supabase] Erro ao salvar:', err.message);
-      });
-    }
+    // ── 3. Salvar no Supabase ANTES de enviar a resposta ──
+    // Usa await com timeout de 5s para garantir que o upsert complete
+    // antes do runtime da Vercel encerrar a função
+    await saveToSupabase(supabase, tickerUpper, companyName, result);
 
     console.log(`[analysis] Concluído via ${provider}`);
     return res.status(200).json(result);
