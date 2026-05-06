@@ -269,9 +269,9 @@ header{
 
 <div id="landing" class="section">
   <div class="hero">
-    <div class="hero-badge"><i class="fa-solid fa-microchip"></i> BrAPI + IA + Supabase</div>
+    <div class="hero-badge"><i class="fa-solid fa-microchip"></i> BrAPI + Gemini + Supabase</div>
     <h2>Análise Fundamentalista<br><em>Inteligente</em></h2>
-    <p>Dados em tempo real via BrAPI, histórico e análise qualitativa via IA, tudo cacheado no Supabase para economia de tokens. Acesse análises profundas de ações da B3.</p>
+    <p>Dados em tempo real via BrAPI, histórico e análise qualitativa via Gemini, tudo cacheado no Supabase para economia de tokens. Acesse análises profundas de ações da B3.</p>
   </div>
   <div class="quick-label">Análises Populares</div>
   <div class="quick-grid" id="quickGrid"></div>
@@ -283,7 +283,7 @@ header{
     <div class="loader-steps" id="loaderSteps">
       <div class="loader-step" data-step="0"><i class="fa-solid fa-magnifying-glass-chart"></i> Buscando cotação na BrAPI...</div>
       <div class="loader-step" data-step="1"><i class="fa-solid fa-database"></i> Verificando cache no Supabase...</div>
-      <div class="loader-step" data-step="2"><i class="fa-solid fa-brain"></i> Gerando análise com IA...</div>
+      <div class="loader-step" data-step="2"><i class="fa-solid fa-brain"></i> Gerando análise com Gemini IA...</div>
       <div class="loader-step" data-step="3"><i class="fa-solid fa-chart-line"></i> Montando dashboard...</div>
     </div>
   </div>
@@ -345,7 +345,7 @@ header{
         <div class="slider-group"><label>WACC (Taxa de Desconto) <strong id="slWaccVal">12%</strong></label><input type="range" id="slWacc" min="5" max="25" step="0.5" value="12"></div>
         <div class="slider-group"><label>Crescimento Perpétuo <strong id="slTermVal">3%</strong></label><input type="range" id="slTerm" min="0" max="6" step="0.5" value="3"></div>
         <div class="slider-group"><label>Anos de Projeção <strong id="slYearsVal">10</strong></label><input type="range" id="slYears" min="5" max="15" step="1" value="10"></div>
-        <div class="dcf-note"><i class="fa-solid fa-circle-info"></i> Ajuste as premissas para simular cenários. Dados históricos via IA, preço atual via BrAPI.</div>
+        <div class="dcf-note"><i class="fa-solid fa-circle-info"></i> Ajuste as premissas para simular cenários. Dados históricos via Gemini, preço atual via BrAPI.</div>
       </div>
       <div class="dcf-panel">
         <h4><i class="fa-solid fa-bullseye"></i>&nbsp; Resultado do Modelo</h4>
@@ -376,7 +376,7 @@ header{
 <script>
 /* ══════════════════════════════════════════════════
    ValorIA — Frontend Standalone (Vercel)
-   Dados: BrAPI (tempo real) + IA (histórico/análise)
+   Dados: BrAPI (tempo real) + Gemini (histórico/análise)
    Cache: Supabase (server) + localStorage (client)
    ══════════════════════════════════════════════════ */
 
@@ -500,7 +500,7 @@ async function analyze(ticker, forceRefresh) {
 
     setStep(1);
 
-    // ── Step 2: Analysis + Historical (Supabase cache or IA) ──
+    // ── Step 2: Analysis + Historical (Supabase cache or Gemini) ──
     const analysisRes = await fetch('/api/analysis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -529,8 +529,6 @@ async function analyze(ticker, forceRefresh) {
 
     if (analysisData.fromCache) {
       showToast('Análise carregada do cache Supabase', 'info');
-    } else if (analysisData.provider) {
-      showToast(`Análise gerada com ${analysisData.provider}`, 'info');
     }
 
   } catch (err) {
@@ -547,6 +545,89 @@ async function analyze(ticker, forceRefresh) {
       showSection('landing');
     }
   }
+}
+
+// ── Mesclar indicadores BrAPI + dados históricos da IA ──
+// BrAPI gratuito retorna poucos dados; a IA traz margens, DY, etc.
+function mergeMetrics(brapiMetrics, historical) {
+  const m = { ...(brapiMetrics || {}) };
+  if (!historical || !historical.years || !historical.years.length) return m;
+
+  // Pega o índice do último ano com dados
+  const lastIdx = historical.years.length - 1;
+
+  // Helper: preenche se BrAPI não tem (null/undefined)
+  function fill(key, arr) {
+    if (m[key] == null && arr && arr[lastIdx] != null) {
+      m[key] = arr[lastIdx];
+    }
+  }
+
+  fill('margemBruta', historical.margemBruta);
+  fill('margemEbitda', historical.margemEbitda);
+  fill('margemLiquida', historical.margemLiquida);
+  fill('dividendYield', historical.dividendYield);
+
+  // P/VP: se temos patrimonioLiquido e acoes, podemos calcular
+  if (m.pvp == null && historical.patrimonioLiquido && historical.patrimonioLiquido[lastIdx] != null) {
+    const pl = historical.patrimonioLiquido[lastIdx]; // em milhões
+    const dcf = state.analysis?.dcfInputs || {};
+    const shares = dcf.acoes || state.quote?.shares;
+    const price = state.quote?.currentPrice;
+    if (shares && price && pl) {
+      const vpa = (pl * 1e6) / shares;
+      m.vpa = m.vpa ?? vpa;
+      m.pvp = m.pvp ?? (price / vpa);
+    }
+  }
+
+  // DL/EBITDA do último ano
+  if (m.dividaLiquidaEbitda == null && historical.dividaLiquida && historical.ebitda) {
+    const dl = historical.dividaLiquida[lastIdx];
+    const ebitda = historical.ebitda[lastIdx];
+    if (dl != null && ebitda != null && ebitda !== 0) {
+      m.dividaLiquidaEbitda = dl / ebitda;
+    }
+  }
+
+  // ROE do último ano: lucroLiquido / patrimonioLiquido * 100
+  if (m.roe == null && historical.lucroLiquido && historical.patrimonioLiquido) {
+    const ll = historical.lucroLiquido[lastIdx];
+    const pll = historical.patrimonioLiquido[lastIdx];
+    if (ll != null && pll != null && pll !== 0) {
+      m.roe = (ll / pll) * 100;
+    }
+  }
+
+  // DL/PL
+  if (m.dividaLiquidaPl == null && historical.dividaLiquida && historical.patrimonioLiquido) {
+    const dl = historical.dividaLiquida[lastIdx];
+    const pll = historical.patrimonioLiquido[lastIdx];
+    if (dl != null && pll != null && pll !== 0) {
+      m.dividaLiquidaPl = dl / pll;
+    }
+  }
+
+  // EV/EBITDA: (marketCap + dividaLiquida) / ebitda
+  if (m.evEbitda == null && historical.ebitda && historical.dividaLiquida) {
+    const ebitda = historical.ebitda[lastIdx];
+    const dl = historical.dividaLiquida[lastIdx];
+    const mktCap = state.quote?.marketCap;
+    if (ebitda != null && ebitda !== 0 && mktCap != null) {
+      const dlVal = dl != null ? dl * 1e6 : 0;
+      m.evEbitda = (mktCap + dlVal) / (ebitda * 1e6);
+    }
+  }
+
+  // Payout: dividendosPorAcao / LPA * 100
+  if (m.payout == null && historical.dividendosPorAcao && m.lpa) {
+    const dpa = historical.dividendosPorAcao[lastIdx];
+    if (dpa != null && m.lpa !== 0) {
+      m.payout = (dpa / m.lpa) * 100;
+    }
+  }
+
+  return m;
 }
 
 // ═══════════════════════════════════════
@@ -580,8 +661,10 @@ function renderDashboard(quote, analysisData) {
 
   $('#ovDesc').textContent = quote.description || '';
 
+  // Mesclar indicadores BrAPI + IA histórica
+  const m = mergeMetrics(quote.metrics, analysisData.historical);
+
   // Badges
-  const m = quote.metrics || {};
   const badges = [];
   if(m.pl!=null) badges.push({l:'P/L',v:fmtNum(m.pl),c:m.pl<15?'positive':m.pl>25?'negative':''});
   if(m.dividendYield!=null) badges.push({l:'DY',v:fmtPct(m.dividendYield),c:m.dividendYield>6?'positive':''});
@@ -598,7 +681,7 @@ function renderDashboard(quote, analysisData) {
     body.innerHTML = '<p style="color:var(--txt3)">Análise não disponível para este ticker.</p>';
   }
 
-  // Metrics
+  // Metrics (usando indicadores mesclados)
   renderMetrics(m);
 
   // Charts (from historical data)
