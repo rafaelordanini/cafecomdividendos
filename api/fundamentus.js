@@ -58,7 +58,6 @@ export default async function handler(req, res) {
 
     if (pairCount < 5) {
       console.error(`[Fundamentus] Poucos dados extraídos: ${pairCount} pares`);
-      // Log some pairs for debugging
       console.error('[Fundamentus] Pares:', JSON.stringify(pairs).substring(0, 500));
       return res.status(404).json({ error: `Dados insuficientes para "${tickerUpper}" no Fundamentus` });
     }
