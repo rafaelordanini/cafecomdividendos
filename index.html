@@ -307,6 +307,38 @@ header{
 .margin-label .pct.bad{color:var(--negative)}
 .dcf-note{margin-top:16px;font-size:.76rem;color:var(--txt3);line-height:1.5;border-top:1px solid var(--border);padding-top:12px}
 
+/* ═══ GRAHAM ═══ */
+.graham-section{margin-top:24px}
+.graham-section .section-title{margin-bottom:16px}
+.graham-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.graham-panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px;box-shadow:var(--shadow)}
+.graham-panel h4{font-size:.88rem;color:var(--txt2);margin-bottom:18px;font-family:'Be Vietnam Pro',sans-serif;font-weight:600}
+.graham-formula{text-align:center;padding:20px 16px;background:var(--bg2);border-radius:var(--radius-sm);margin-bottom:20px;border:1px solid var(--border)}
+.graham-formula-text{font-family:'Sora',sans-serif;font-size:1.05rem;font-weight:600;color:var(--txt);letter-spacing:-.01em}
+.graham-formula-text .sqrt{position:relative;padding-left:24px}
+.graham-formula-text .sqrt::before{content:'√';position:absolute;left:4px;top:-2px;font-size:1.3rem;color:var(--accent)}
+.graham-formula-text .sqrt-bar{border-top:2px solid var(--accent);padding-top:4px}
+.graham-inputs{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.graham-input-card{padding:14px;background:var(--bg2);border-radius:var(--radius-sm);border:1px solid var(--border);text-align:center}
+.graham-input-card .gi-label{font-size:.7rem;color:var(--txt3);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:4px}
+.graham-input-card .gi-value{font-family:'Sora',sans-serif;font-size:1.15rem;font-weight:700;color:var(--txt)}
+.graham-input-card .gi-value.na{color:var(--txt3);font-size:.9rem;font-weight:500}
+.graham-result{text-align:center;padding:20px 0}
+.graham-fair{font-family:'Sora',sans-serif;font-size:2.2rem;font-weight:800;color:var(--accent);line-height:1;letter-spacing:-.02em}
+.graham-fair.na{color:var(--txt3);font-size:1.2rem;font-weight:500}
+.graham-fair-label{font-size:.75rem;color:var(--txt3);margin-top:6px;text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+.graham-vs{display:flex;justify-content:center;gap:32px;margin-top:18px}
+.graham-vs-item{text-align:center}
+.graham-vs-item .val{font-family:'Sora',sans-serif;font-size:1.25rem;font-weight:700}
+.graham-vs-item .lbl{font-size:.7rem;color:var(--txt3);margin-top:2px;text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.graham-bar{margin-top:18px;height:8px;border-radius:4px;background:var(--border);overflow:hidden}
+.graham-bar-fill{height:100%;border-radius:4px;transition:width .5s ease-out}
+.graham-bar-label{display:flex;justify-content:space-between;margin-top:6px;font-size:.76rem;color:var(--txt2)}
+.graham-bar-label .pct{font-weight:700}
+.graham-bar-label .pct.good{color:var(--positive)}
+.graham-bar-label .pct.bad{color:var(--negative)}
+.graham-note{margin-top:16px;font-size:.76rem;color:var(--txt3);line-height:1.5;border-top:1px solid var(--border);padding-top:12px}
+
 /* ═══ DIVIDENDS ═══ */
 .div-table-wrap{overflow-x:auto;margin-top:16px}
 .div-table{width:100%;border-collapse:separate;border-spacing:0;font-size:.84rem}
@@ -339,7 +371,7 @@ header{
   .search-box{max-width:100%;flex:1 1 100%;order:3;margin-left:0;margin-top:8px}
   .brand h1{font-size:1.05rem}
   .hero h2{font-size:1.8rem}
-  .charts-grid,.dcf-grid{grid-template-columns:1fr}
+  .charts-grid,.dcf-grid,.graham-grid{grid-template-columns:1fr}
   .metrics-grid{grid-template-columns:repeat(auto-fill,minmax(125px,1fr))}
   .ov-top{flex-direction:column}
   .ov-price-block{text-align:left;align-items:flex-start}
@@ -495,6 +527,41 @@ header{
           </div>
           <div class="margin-bar"><div class="margin-bar-fill" id="marginBarFill"></div></div>
           <div class="margin-label"><span>Margem de Segurança</span><span class="pct" id="marginPct">—</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="graham-section">
+      <div class="section-title"><i class="fa-solid fa-book"></i> Fórmula de Graham — Preço Justo</div>
+      <div class="graham-grid">
+        <div class="graham-panel">
+          <h4><i class="fa-solid fa-square-root-variable"></i>&nbsp; Fórmula</h4>
+          <div class="graham-formula">
+            <div class="graham-formula-text">Preço Justo = <span class="sqrt"><span class="sqrt-bar">22,5 &times; LPA &times; VPA</span></span></div>
+          </div>
+          <div class="graham-inputs">
+            <div class="graham-input-card">
+              <div class="gi-label">LPA (Lucro por Ação)</div>
+              <div class="gi-value" id="grahamLPA">—</div>
+            </div>
+            <div class="graham-input-card">
+              <div class="gi-label">VPA (Valor Patrimonial)</div>
+              <div class="gi-value" id="grahamVPA">—</div>
+            </div>
+          </div>
+          <div class="graham-note"><i class="fa-solid fa-circle-info"></i> A fórmula de Benjamin Graham estima o valor intrínseco usando P/L máximo de 15 e P/VP máximo de 1,5 (15 &times; 1,5 = 22,5). Funciona melhor para empresas lucrativas com patrimônio positivo.</div>
+        </div>
+        <div class="graham-panel">
+          <h4><i class="fa-solid fa-bullseye"></i>&nbsp; Resultado</h4>
+          <div class="graham-result">
+            <div class="graham-fair" id="grahamFair">—</div>
+            <div class="graham-fair-label">Preço Justo (Graham)</div>
+            <div class="graham-vs">
+              <div class="graham-vs-item"><div class="val" id="grahamCurrent">—</div><div class="lbl">Preço Atual</div></div>
+              <div class="graham-vs-item"><div class="val" id="grahamUpside" style="color:var(--positive)">—</div><div class="lbl">Upside / Downside</div></div>
+            </div>
+            <div class="graham-bar"><div class="graham-bar-fill" id="grahamBarFill"></div></div>
+            <div class="graham-bar-label"><span>Margem de Segurança</span><span class="pct" id="grahamMarginPct">—</span></div>
+          </div>
         </div>
       </div>
     </div>
@@ -817,6 +884,9 @@ function renderDashboard(quote, analysisData, fundData) {
   // DCF
   initDCF(analysisData.dcfInputs || {}, quote);
 
+  // Graham
+  renderGraham(m, quote);
+
   // Dividends
   renderDividends(analysisData.historical || {});
 
@@ -986,6 +1056,65 @@ function updateDCF() {
     const bf=$('#marginBarFill'), fp=Math.min(100,Math.max(0,(price/ips)*100));
     bf.style.width=fp+'%';
     bf.style.background=mg>20?'linear-gradient(90deg,var(--positive),var(--teal))':mg>0?'linear-gradient(90deg,var(--warn),var(--accent))':'linear-gradient(90deg,var(--negative),var(--warn))';
+  }
+}
+
+// ── Graham Formula ──
+function renderGraham(m, quote) {
+  const lpa = m.lpa, vpa = m.vpa, price = quote.currentPrice;
+
+  // Mostra os inputs
+  const lpaEl = $('#grahamLPA');
+  const vpaEl = $('#grahamVPA');
+  lpaEl.textContent = lpa != null ? fmtBRL(lpa) : 'N/D';
+  lpaEl.className = 'gi-value' + (lpa == null ? ' na' : '');
+  vpaEl.textContent = vpa != null ? fmtBRL(vpa) : 'N/D';
+  vpaEl.className = 'gi-value' + (vpa == null ? ' na' : '');
+
+  const fairEl = $('#grahamFair');
+  const currentEl = $('#grahamCurrent');
+  const upsideEl = $('#grahamUpside');
+  const barFill = $('#grahamBarFill');
+  const marginPct = $('#grahamMarginPct');
+
+  currentEl.textContent = price ? fmtBRL(price) : 'N/D';
+
+  // Validação: LPA e VPA devem ser positivos para a raiz quadrada funcionar
+  if (lpa == null || vpa == null || lpa <= 0 || vpa <= 0) {
+    fairEl.textContent = lpa != null && vpa != null ? 'LPA ou VPA negativos' : 'LPA ou VPA indisponível';
+    fairEl.className = 'graham-fair na';
+    upsideEl.textContent = '—'; upsideEl.style.color = 'var(--txt3)';
+    barFill.style.width = '0%'; marginPct.textContent = '—';
+    marginPct.className = 'pct';
+    return;
+  }
+
+  // Preço Justo = √(22.5 × LPA × VPA)
+  const fairPrice = Math.sqrt(22.5 * lpa * vpa);
+  fairEl.textContent = fmtBRL(fairPrice);
+  fairEl.className = 'graham-fair';
+
+  if (price && fairPrice > 0) {
+    const upside = ((fairPrice / price) - 1) * 100;
+    upsideEl.textContent = (upside >= 0 ? '+' : '') + upside.toFixed(1) + '%';
+    upsideEl.style.color = upside >= 0 ? 'var(--positive)' : 'var(--negative)';
+
+    const margin = ((fairPrice - price) / fairPrice) * 100;
+    marginPct.textContent = margin.toFixed(1) + '%';
+    marginPct.classList.toggle('good', margin > 0);
+    marginPct.classList.toggle('bad', margin <= 0);
+
+    const fillPct = Math.min(100, Math.max(0, (price / fairPrice) * 100));
+    barFill.style.width = fillPct + '%';
+    barFill.style.background = margin > 20
+      ? 'linear-gradient(90deg,var(--positive),var(--teal))'
+      : margin > 0
+        ? 'linear-gradient(90deg,var(--warn),var(--accent))'
+        : 'linear-gradient(90deg,var(--negative),var(--warn))';
+  } else {
+    upsideEl.textContent = '—'; upsideEl.style.color = 'var(--txt3)';
+    barFill.style.width = '0%'; marginPct.textContent = '—';
+    marginPct.className = 'pct';
   }
 }
 
