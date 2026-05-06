@@ -269,9 +269,9 @@ header{
 
 <div id="landing" class="section">
   <div class="hero">
-    <div class="hero-badge"><i class="fa-solid fa-microchip"></i> BrAPI + Gemini + Supabase</div>
+    <div class="hero-badge"><i class="fa-solid fa-microchip"></i> BrAPI + IA + Supabase</div>
     <h2>Análise Fundamentalista<br><em>Inteligente</em></h2>
-    <p>Dados em tempo real via BrAPI, histórico e análise qualitativa via Gemini, tudo cacheado no Supabase para economia de tokens. Acesse análises profundas de ações da B3.</p>
+    <p>Dados em tempo real via BrAPI, histórico e análise qualitativa via IA, tudo cacheado no Supabase para economia de tokens. Acesse análises profundas de ações da B3.</p>
   </div>
   <div class="quick-label">Análises Populares</div>
   <div class="quick-grid" id="quickGrid"></div>
@@ -283,7 +283,7 @@ header{
     <div class="loader-steps" id="loaderSteps">
       <div class="loader-step" data-step="0"><i class="fa-solid fa-magnifying-glass-chart"></i> Buscando cotação na BrAPI...</div>
       <div class="loader-step" data-step="1"><i class="fa-solid fa-database"></i> Verificando cache no Supabase...</div>
-      <div class="loader-step" data-step="2"><i class="fa-solid fa-brain"></i> Gerando análise com Gemini IA...</div>
+      <div class="loader-step" data-step="2"><i class="fa-solid fa-brain"></i> Gerando análise com IA...</div>
       <div class="loader-step" data-step="3"><i class="fa-solid fa-chart-line"></i> Montando dashboard...</div>
     </div>
   </div>
@@ -345,7 +345,7 @@ header{
         <div class="slider-group"><label>WACC (Taxa de Desconto) <strong id="slWaccVal">12%</strong></label><input type="range" id="slWacc" min="5" max="25" step="0.5" value="12"></div>
         <div class="slider-group"><label>Crescimento Perpétuo <strong id="slTermVal">3%</strong></label><input type="range" id="slTerm" min="0" max="6" step="0.5" value="3"></div>
         <div class="slider-group"><label>Anos de Projeção <strong id="slYearsVal">10</strong></label><input type="range" id="slYears" min="5" max="15" step="1" value="10"></div>
-        <div class="dcf-note"><i class="fa-solid fa-circle-info"></i> Ajuste as premissas para simular cenários. Dados históricos via Gemini, preço atual via BrAPI.</div>
+        <div class="dcf-note"><i class="fa-solid fa-circle-info"></i> Ajuste as premissas para simular cenários. Dados históricos via IA, preço atual via BrAPI.</div>
       </div>
       <div class="dcf-panel">
         <h4><i class="fa-solid fa-bullseye"></i>&nbsp; Resultado do Modelo</h4>
@@ -376,7 +376,7 @@ header{
 <script>
 /* ══════════════════════════════════════════════════
    ValorIA — Frontend Standalone (Vercel)
-   Dados: BrAPI (tempo real) + Gemini (histórico/análise)
+   Dados: BrAPI (tempo real) + IA (histórico/análise)
    Cache: Supabase (server) + localStorage (client)
    ══════════════════════════════════════════════════ */
 
@@ -465,11 +465,14 @@ function setStep(step) {
 }
 function showToast(msg, type) {
   const old = $('.toast'); if(old) old.remove();
+  // Limitar mensagem para não mostrar JSON bruto
+  let cleanMsg = msg;
+  if (cleanMsg.length > 200) cleanMsg = cleanMsg.substring(0, 200) + '…';
   const t = document.createElement('div');
   t.className = 'toast '+(type||'error');
-  t.innerHTML = `<i class="fa-solid fa-${type==='info'?'circle-info':'circle-exclamation'}"></i> ${msg}`;
+  t.innerHTML = `<i class="fa-solid fa-${type==='info'?'circle-info':'circle-exclamation'}"></i> ${cleanMsg}`;
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 5000);
+  setTimeout(() => t.remove(), 7000);
 }
 function fmtBRL(v) { return v==null||isNaN(v)?'N/D':'R$ '+Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function fmtPct(v) { return v==null||isNaN(v)?'N/D':Number(v).toFixed(1)+'%'; }
@@ -497,7 +500,7 @@ async function analyze(ticker, forceRefresh) {
 
     setStep(1);
 
-    // ── Step 2: Analysis + Historical (Supabase cache or Gemini) ──
+    // ── Step 2: Analysis + Historical (Supabase cache or IA) ──
     const analysisRes = await fetch('/api/analysis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -526,6 +529,8 @@ async function analyze(ticker, forceRefresh) {
 
     if (analysisData.fromCache) {
       showToast('Análise carregada do cache Supabase', 'info');
+    } else if (analysisData.provider) {
+      showToast(`Análise gerada com ${analysisData.provider}`, 'info');
     }
 
   } catch (err) {
@@ -596,7 +601,7 @@ function renderDashboard(quote, analysisData) {
   // Metrics
   renderMetrics(m);
 
-  // Charts (from Gemini historical data)
+  // Charts (from historical data)
   renderCharts(analysisData.historical || {});
 
   // DCF
@@ -609,7 +614,8 @@ function renderDashboard(quote, analysisData) {
   const parts = [];
   parts.push('Preço: BrAPI (tempo real)');
   if(analysisData.dataSource) parts.push('Histórico: '+analysisData.dataSource);
-  parts.push(analysisData.fromCache ? 'Análise: cache Supabase' : 'Análise: Gemini IA');
+  if(analysisData.provider) parts.push('IA: '+analysisData.provider);
+  else parts.push(analysisData.fromCache ? 'Análise: cache Supabase' : 'Análise: IA');
   $('#dataSource').innerHTML = `<i class="fa-solid fa-database"></i> ${parts.join(' · ')}`;
 }
 
